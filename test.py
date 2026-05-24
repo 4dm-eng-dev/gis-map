@@ -1,5 +1,4 @@
 import streamlit as st
-import pandas as pd
 import numpy as np
 import rasterio
 from pyproj import Transformer
@@ -7,272 +6,211 @@ import plotly.graph_objects as go
 import base64
 from io import BytesIO
 from PIL import Image
+import simplekml
 
 # =========================================================
-# PAGE CONFIG
+# CONFIG
 # =========================================================
 st.set_page_config(layout="wide")
-st.title("🗺️ Interactive Cadastral Map Viewer")
+st.title("🗺️ Manual GIS Parcel Builder (NO CSV VERSION)")
 
 # =========================================================
-# SESSION STATE
+# STATE
 # =========================================================
-if "transformer" not in st.session_state:
-    st.session_state.transformer = Transformer.from_crs(
-        "EPSG:4326",
-        "EPSG:22992",
-        always_xy=True
-    )
+if "points_etm" not in st.session_state:
+    st.session_state.points_etm = []
+
+if "submitted" not in st.session_state:
+    st.session_state.submitted = False
+
+if "map_number" not in st.session_state:
+    st.session_state.map_number = None
+
+if "area_m2" not in st.session_state:
+    st.session_state.area_m2 = None
+
+if "view_mode" not in st.session_state:
+    st.session_state.view_mode = "ETM"
+
+# Transformers
+wgs_to_etm = Transformer.from_crs("EPSG:4326", "EPSG:22992", always_xy=True)
+etm_to_wgs = Transformer.from_crs("EPSG:22992", "EPSG:4326", always_xy=True)
+
+# =========================================================
+# HELPERS
+# =========================================================
+def compute_map_number(xs, ys):
+    cx = np.mean(xs)
+    cy = np.mean(ys)
+    return f"{int(cy/1000)}/{int(cx/1500)*1.5}"
+
+def polygon_area(x, y):
+    return 0.5 * abs(np.dot(x, np.roll(y, 1)) - np.dot(y, np.roll(x, 1)))
 
 # =========================================================
 # SIDEBAR
 # =========================================================
 st.sidebar.header("Control Panel")
 
-csv_file = st.sidebar.file_uploader(
-    "1. Load Cadastral CSV",
-    type="csv"
+# ---------------- ADD POINT ----------------
+st.sidebar.subheader("➕ Add Point")
+
+mode = st.sidebar.selectbox(
+    "Input Mode",
+    ["WGS84 → ETM", "ETM → ETM (direct)"]
 )
 
-# =========================================================
-# MAIN
-# =========================================================
-if csv_file:
+x_in = st.sidebar.text_input("X")
+y_in = st.sidebar.text_input("Y")
 
+if st.sidebar.button("➕ Add Point"):
     try:
-        # -------------------------------------------------
-        # READ CSV
-        # -------------------------------------------------
-        df = pd.read_csv(
-            csv_file,
-            sep=";",
-            encoding="utf-8-sig"
-        )
+        x = float(x_in)
+        y = float(y_in)
 
-        # -------------------------------------------------
-        # CLEAN COLUMN NAMES
-        # -------------------------------------------------
-        df.columns = (
-            df.columns
-            .str.strip()
-            .str.lower()
-        )
+        if mode == "WGS84 → ETM":
+            x2, y2 = wgs_to_etm.transform(x, y)
+        else:
+            x2, y2 = x, y
 
-        # DEBUG
-        st.write("Detected columns:", df.columns.tolist())
-        st.write(df.head())
+        st.session_state.points_etm.append((x2, y2))
+        st.sidebar.success(f"Added: {x2:.2f}, {y2:.2f}")
 
-        # -------------------------------------------------
-        # CHECK REQUIRED COLUMNS
-        # -------------------------------------------------
-        if "x" not in df.columns or "y" not in df.columns:
-            st.error("CSV must contain columns named x and y")
-            st.stop()
+    except:
+        st.sidebar.error("Invalid input")
 
-        # -------------------------------------------------
-        # CONVERT TO NUMERIC
-        # -------------------------------------------------
-        df["x"] = pd.to_numeric(df["x"], errors="coerce")
-        df["y"] = pd.to_numeric(df["y"], errors="coerce")
+# ---------------- SUBMIT ----------------
+if st.sidebar.button("✅ Submit Points"):
+    if len(st.session_state.points_etm) < 3:
+        st.sidebar.error("Need at least 3 points")
+    else:
+        xs = np.array([p[0] for p in st.session_state.points_etm])
+        ys = np.array([p[1] for p in st.session_state.points_etm])
 
-        # REMOVE INVALID ROWS
-        df = df.dropna(subset=["x", "y"])
+        st.session_state.map_number = compute_map_number(xs, ys)
+        st.session_state.area_m2 = polygon_area(xs, ys)
+        st.session_state.submitted = True
 
-        if len(df) == 0:
-            st.error("No valid coordinate rows found.")
-            st.stop()
+        st.sidebar.success(f"Sheet: {st.session_state.map_number}")
 
-        # -------------------------------------------------
-        # TRANSFORM COORDINATES
-        # -------------------------------------------------
-        xs, ys = st.session_state.transformer.transform(
-            df["x"].values,
-            df["y"].values
-        )
+# ---------------- CONVERT VIEW ----------------
+if st.sidebar.button("🔄 Toggle WGS84 View"):
+    st.session_state.view_mode = "WGS84" if st.session_state.view_mode == "ETM" else "ETM"
+    st.sidebar.info(f"View mode: {st.session_state.view_mode}")
 
-        xs = np.array(xs)
-        ys = np.array(ys)
+# ---------------- AREA ----------------
+if st.session_state.area_m2:
+    st.sidebar.info(f"Area: {st.session_state.area_m2:.2f} m²")
+    st.sidebar.info(f"Area: {st.session_state.area_m2/10000:.4f} ha")
 
-        # -------------------------------------------------
-        # DEBUG
-        # -------------------------------------------------
-        st.write("X range:", np.min(xs), np.max(xs))
-        st.write("Y range:", np.min(ys), np.max(ys))
+# ---------------- KML ----------------
+kml_data = None
 
-        # -------------------------------------------------
-        # CENTROID
-        # -------------------------------------------------
-        centroid_x = np.mean(xs)
-        centroid_y = np.mean(ys)
+if st.sidebar.button("📁 Generate KML"):
 
-        map_x = int(centroid_x / 1500) * 1.5
-        map_y = int(centroid_y / 1000)
+    if len(st.session_state.points_etm) >= 3:
 
-        map_number = f"{map_y}/{map_x}"
+        kml = simplekml.Kml()
+        coords = []
 
-        st.sidebar.success(f"Sheet No: {map_number}")
+        for x, y in st.session_state.points_etm:
+            lon, lat = etm_to_wgs.transform(x, y)
+            coords.append((lon, lat))
 
-        # =================================================
-        # TIFF FILE
-        # =================================================
-        tif_file = st.sidebar.file_uploader(
-            f"2. Load TIFF File (Map {map_number})",
-            type=["tif", "tiff"]
-        )
+        coords.append(coords[0])
 
-        # =================================================
-        # STYLE CONTROLS
-        # =================================================
-        marker_color = st.sidebar.selectbox(
-            "Color",
-            ["red", "blue", "green", "black", "orange", "purple"]
-        )
+        poly = kml.newpolygon(name="Parcel")
+        poly.outerboundaryis = coords
 
-        marker_size = st.sidebar.slider(
-            "Size",
-            2,
-            20,
-            6
-        )
+        file_path = "parcel.kml"
+        kml.save(file_path)
 
-        # =================================================
-        # FIGURE
-        # =================================================
-        fig = go.Figure()
+        with open(file_path, "rb") as f:
+            kml_data = f.read()
 
-        # -------------------------------------------------
-        # TIFF BACKGROUND
-        # -------------------------------------------------
-        if tif_file:
+if kml_data:
+    st.sidebar.download_button("⬇ Download KML", kml_data, file_name="parcel.kml")
 
-            with rasterio.open(tif_file) as src:
+# ---------------- TIFF (ONLY AFTER SUBMIT) ----------------
+tif_file = None
 
-                left, bottom, right, top = src.bounds
+if st.session_state.submitted:
+    tif_file = st.sidebar.file_uploader(
+        f"Load TIFF for Sheet {st.session_state.map_number}",
+        type=["tif", "tiff"]
+    )
 
-                img = src.read()
+# =========================================================
+# MAP
+# =========================================================
+if st.session_state.points_etm:
 
-                # Handle grayscale
-                if img.shape[0] == 1:
-                    img = np.repeat(img, 3, axis=0)
+    pts = np.array(st.session_state.points_etm)
 
-                # RGB only
-                img = np.transpose(img[:3], (1, 2, 0))
+    xs, ys = pts[:, 0], pts[:, 1]
 
-                # Normalize
-                img = img.astype(np.float32)
+    centroid_x, centroid_y = np.mean(xs), np.mean(ys)
 
-                img = (
-                    (img - img.min()) /
-                    (img.max() - img.min() + 1e-9)
-                )
+    fig = go.Figure()
 
-                img = (img * 255).astype(np.uint8)
+    # ---------------- TIFF ----------------
+    if tif_file:
+        with rasterio.open(tif_file) as src:
+            left, bottom, right, top = src.bounds
 
-                # PIL conversion
-                pil_img = Image.fromarray(img)
+            img = src.read()
+            if img.shape[0] == 1:
+                img = np.repeat(img, 3, axis=0)
 
-                buffer = BytesIO()
+            img = np.transpose(img[:3], (1, 2, 0))
+            img = (img - img.min()) / (img.max() - img.min() + 1e-9)
+            img = (img * 255).astype(np.uint8)
 
-                pil_img.save(buffer, format="PNG")
+            buf = BytesIO()
+            Image.fromarray(img).save(buf, format="PNG")
 
-                encoded = base64.b64encode(
-                    buffer.getvalue()
-                ).decode()
+            encoded = base64.b64encode(buf.getvalue()).decode()
 
-                fig.add_layout_image(
-                    dict(
-                        source="data:image/png;base64," + encoded,
-                        xref="x",
-                        yref="y",
-                        x=left,
-                        y=top,
-                        sizex=(right - left),
-                        sizey=(top - bottom),
-                        sizing="stretch",
-                        opacity=1,
-                        layer="below"
-                    )
-                )
+            fig.add_layout_image(dict(
+                source="data:image/png;base64," + encoded,
+                xref="x",
+                yref="y",
+                x=left,
+                y=top,
+                sizex=(right - left),
+                sizey=(top - bottom),
+                sizing="stretch",
+                layer="below"
+            ))
 
-        # -------------------------------------------------
-        # SURVEY POINTS
-        # -------------------------------------------------
-        fig.add_trace(go.Scatter(
-            x=xs,
-            y=ys,
-            mode="markers",
-            marker=dict(
-                size=marker_size,
-                color=marker_color,
-                line=dict(width=1, color="black")
-            ),
-            name="Survey Points"
-        ))
+    # ---------------- POLYGON ----------------
+    fig.add_trace(go.Scatter(
+        x=xs,
+        y=ys,
+        mode="lines+markers",
+        fill="toself",
+        name="Parcel"
+    ))
 
-        # -------------------------------------------------
-        # CENTROID
-        # -------------------------------------------------
-        fig.add_trace(go.Scatter(
-            x=[centroid_x],
-            y=[centroid_y],
-            mode="markers",
-            marker=dict(
-                size=14,
-                color="blue"
-            ),
-            name="Centroid"
-        ))
+    fig.add_trace(go.Scatter(
+        x=[centroid_x],
+        y=[centroid_y],
+        mode="markers",
+        marker=dict(size=12, color="blue"),
+        name="Centroid"
+    ))
 
-        # =================================================
-        # AUTO ZOOM
-        # =================================================
-        pad_x = max(
-            (np.max(xs) - np.min(xs)) * 0.1,
-            10
-        )
+    # FIX DISTORTION
+    fig.update_yaxes(scaleanchor="x", scaleratio=1)
 
-        pad_y = max(
-            (np.max(ys) - np.min(ys)) * 0.1,
-            10
-        )
+    fig.update_layout(
+        height=850,
+        title=f"Parcel — {st.session_state.map_number}",
+        dragmode="pan",
+        plot_bgcolor="#eef"
+    )
 
-        fig.update_layout(
-            title=f"🗺️ Cadastral Map — Sheet {map_number}",
-            height=850,
-            dragmode="pan",
-            paper_bgcolor="#34d5eb",
-            plot_bgcolor="#bff3fb"
-        )
-
-        fig.update_xaxes(
-            range=[
-                np.min(xs) - pad_x,
-                np.max(xs) + pad_x
-            ],
-            showgrid=True
-        )
-
-        fig.update_yaxes(
-            range=[
-                np.min(ys) - pad_y,
-                np.max(ys) + pad_y
-            ],
-            scaleanchor="x",
-            scaleratio=1,
-            showgrid=True
-        )
-
-        # =================================================
-        # OUTPUT
-        # =================================================
-        st.plotly_chart(
-            fig,
-            use_container_width=True,
-            config={"scrollZoom": True}
-        )
-
-    except Exception as e:
-        st.exception(e)
+    st.plotly_chart(fig, use_container_width=True, config={"scrollZoom": True})
 
 else:
-    st.info("Upload a CSV file to start mapping.")
+    st.info("Add points → Submit → Load TIFF → Export KML")
