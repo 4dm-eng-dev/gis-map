@@ -101,7 +101,7 @@ if st.sidebar.button("🔄 Toggle WGS84 View"):
 # ---------------- AREA ----------------
 if st.session_state.area_m2:
     st.sidebar.info(f"Area: {st.session_state.area_m2:.2f} m²")
-    st.sidebar.info(f"Area: {st.session_state.area_m2/10000:.4f} ha")
+    # st.sidebar.info(f"Area: {st.session_state.area_m2/10000:.4f} ha")
 
 # ---------------- KML ----------------
 kml_data = None
@@ -119,7 +119,7 @@ if st.sidebar.button("📁 Generate KML"):
 
         coords.append(coords[0])
 
-        poly = kml.newpolygon(name="Parcel")
+        poly = kml.newpolygon(name="area")
         poly.outerboundaryis = coords
 
         file_path = "parcel.kml"
@@ -129,7 +129,7 @@ if st.sidebar.button("📁 Generate KML"):
             kml_data = f.read()
 
 if kml_data:
-    st.sidebar.download_button("⬇ Download KML", kml_data, file_name="parcel.kml")
+    st.sidebar.download_button("⬇ Download KML", kml_data, file_name="area.kml")
 
 # ---------------- TIFF (ONLY AFTER SUBMIT) ----------------
 tif_file = None
