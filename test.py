@@ -12,7 +12,7 @@ import simplekml
 # CONFIG
 # =========================================================
 st.set_page_config(layout="wide")
-st.title("🗺️ Manual GIS Parcel Builder (NO CSV VERSION)")
+st.title("🗺️ ETM MAPS READER ")
 
 # =========================================================
 # STATE
