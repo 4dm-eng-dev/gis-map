@@ -101,15 +101,12 @@ if st.sidebar.button("🔄 Toggle WGS84 View"):
 # ---------------- AREA ----------------
 if st.session_state.area_m2:
     st.sidebar.info(f"Area: {st.session_state.area_m2:.2f} m²")
-    # st.sidebar.info(f"Area: {st.session_state.area_m2/10000:.4f} ha")
 
-# ---------------- KML ----------------
-kml_data = None
+# ---------------- KML (CLOUD SAFE VERSION) ----------------
+kml_string_data = None
 
 if st.sidebar.button("📁 Generate KML"):
-
     if len(st.session_state.points_etm) >= 3:
-
         kml = simplekml.Kml()
         coords = []
 
@@ -122,14 +119,16 @@ if st.sidebar.button("📁 Generate KML"):
         poly = kml.newpolygon(name="area")
         poly.outerboundaryis = coords
 
-        file_path = "parcel.kml"
-        kml.save(file_path)
+        # Generates directly inside the active memory allocation stream (No physical file writing)
+        kml_string_data = kml.kml()
 
-        with open(file_path, "rb") as f:
-            kml_data = f.read()
-
-if kml_data:
-    st.sidebar.download_button("⬇ Download KML", kml_data, file_name="area.kml")
+if kml_string_data:
+    st.sidebar.download_button(
+        label="⬇ Download KML", 
+        data=kml_string_data, 
+        file_name="area.kml",
+        mime="application/vnd.google-earth.kml+xml"
+    )
 
 # ---------------- TIFF (ONLY AFTER SUBMIT) ----------------
 tif_file = None
@@ -146,9 +145,7 @@ if st.session_state.submitted:
 if st.session_state.points_etm:
 
     pts = np.array(st.session_state.points_etm)
-
     xs, ys = pts[:, 0], pts[:, 1]
-
     centroid_x, centroid_y = np.mean(xs), np.mean(ys)
 
     fig = go.Figure()
@@ -183,26 +180,26 @@ if st.session_state.points_etm:
                 layer="below"
             ))
 
-    # ---------------- POLYGON ----------------
+    # ---------------- POLYGON (DARK GREEN UPDATE) ----------------
     fig.add_trace(go.Scatter(
         x=xs,
         y=ys,
         mode="lines+markers",
         fill="toself",
-        fillcolor="rgba(0, 100, 80, 0.3)",  # Translucent dark green inside fill
+        fillcolor="rgba(0, 100, 80, 0.3)",  # Translucent dark green layout fill
         marker=dict(
-            color="darkgreen",               # Colors the border line and markers dark green
+            color="darkgreen",               # Forces connecting lines and points to Dark Green
             size=8
         ),
         name="area"
     ))
 
-
+    # ---------------- CENTROID ----------------
     fig.add_trace(go.Scatter(
         x=[centroid_x],
         y=[centroid_y],
         mode="markers",
-        marker=dict(size=12, color="blue"),
+        marker=dict(size=12, color="orange"), # Changed to orange to contrast nicely with the green layout
         name="Centroid"
     ))
 
@@ -213,10 +210,11 @@ if st.session_state.points_etm:
         height=850,
         title=f"Parcel — {st.session_state.map_number}",
         dragmode="pan",
-        plot_bgcolor="eef"
+        plot_bgcolor="#eef"  # Fixed hex code layout string assignment
     )
 
     st.plotly_chart(fig, use_container_width=True, config={"scrollZoom": True})
 
 else:
     st.info("Add points → Submit → Load TIFF → Export KML")
+
