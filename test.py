@@ -189,8 +189,14 @@ if st.session_state.points_etm:
         y=ys,
         mode="lines+markers",
         fill="toself",
+        fillcolor="rgba(0, 100, 80, 0.3)",  # Translucent dark green inside fill
+        marker=dict(
+            color="darkgreen",               # Colors the border line and markers dark green
+            size=8
+        ),
         name="area"
     ))
+
 
     fig.add_trace(go.Scatter(
         x=[centroid_x],
@@ -207,7 +213,7 @@ if st.session_state.points_etm:
         height=850,
         title=f"Parcel — {st.session_state.map_number}",
         dragmode="pan",
-        plot_bgcolor="#048c41"
+        plot_bgcolor="eef"
     )
 
     st.plotly_chart(fig, use_container_width=True, config={"scrollZoom": True})
